@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>喵喵去爬山：老妈大作战</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #87CEEB;
+            font-family: 'Microsoft YaHei', sans-serif;
+            touch-action: none;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        canvas { display: block; }
+        
+        /* UI 层 */
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            z-index: 5;
+        }
+        #score-board {
+            padding: 15px;
+            color: #fff;
+            text-shadow: 1px 1px 2px #000;
+        }
+        #height-text { font-size: 24px; font-weight: bold; }
+        #location-badge {
+            background: rgba(0,0,0,0.6);
+            color: #ffeb3b;
+            padding: 4px 12px;
+            border-radius: 15px;
+            font-size: 14px;
+            margin-top: 5px;
+            display: inline-block;
+        }
+
+        /* 屏幕遮罩 */
+        #start-screen, #game-over-screen {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.85);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            pointer-events: auto;
+            z-index: 10;
+            backdrop-filter: blur(5px);
+        }
+
+        h1 { 
+            font-size: 26px; 
+            text-align: center; 
+            color: #ffcc80; 
+            margin-bottom: 10px; 
+            line-height: 1.4;
+        }
+        p { text-align: center; font-size: 15px; color: #ddd; max-width: 85%; line-height: 1.6; }
+        
+        .btn {
+            margin-top: 25px;
+            padding: 12px 40px;
+            background: linear-gradient(to bottom, #ff7043, #d84315);
+            color: white;
+            border: none;
+            border-radius: 50px;
+            font-size: 18px;
+            font-weight: bold;
+            cursor: pointer;
+            box-shadow: 0 4px #bf360c;
+            transition: transform 0.1s;
+        }
+        .btn:active { transform: scale(0.95); box-shadow: 0 2px #bf360c; }
+
+        /* 触摸提示 */
+        .touch-hint {
+            position: absolute;
+            bottom: 20%;
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            padding: 0 40px;
+            box-sizing: border-box;
+            opacity: 0.6;
+            pointer-events: none;
+        }
+        .arrow { font-size: 40px; color: white; animation: bounce 1s infinite; }
+        @keyframes bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+
+        /* 音效开关 */
+        #mute-btn {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            z-index: 20;
+            background: rgba(255,255,255,0.3);
+            border: 1px solid white;
+            border-radius: 50%;
+            width: 36px;
+            height: 36px;
+            font-size: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            pointer-events: auto;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+
+<div id="mute-btn" onclick="toggleSound()">🔊</div>
+
+<div id="ui-layer">
+    <div id="score-board">
+        <div id="height-text">0m</div>
+        <div id="location-badge">📍 小区土坡</div>
+    </div>
+    <!-- 游戏中显示的左右提示 -->
+    <div class="touch-hint" id="hints" style="display:none;">
+        <div class="arrow">⬅️</div>
+        <div class="arrow">➡️</div>
+    </div>
+</div>
+
+<div id="start-screen">
+    <h1>🐱 妈妈我也要去爬山</h1>
+    <p>点击屏幕 <b>左边</b> 或 <b>右边</b> 控制小猫<br>它是自动跳跃的哦！<br><br>🎯 目标：<br>躲避“唠叨老妈”，爬上珠穆朗玛峰！</p>
+    <button class="btn" onclick="startGame()">出发！(开启音效)</button>
+</div>
+
+<div id="game-over-screen" style="display: none;">
+    <h1 id="death-msg">你被抓住了！</h1>
+    <p id="final-score">最终高度: 0m</p>
+    <div style="background:rgba(255,255,255,0.1); padding:10px; border-radius:10px; margin:10px;">
+        <p id="mom-quote" style="color:#ffb74d; font-style:italic; margin:0;">"..."</p>
+    </div>
+    <button class="btn" onclick="resetGame()">再试一次</button>
+</div>
+
+<canvas id="gameCanvas"></canvas>
+
+<script>
+    /**
+     * 游戏配置参数 (可调整手感)
+     */
+    const CONFIG = {
+        gravity: 0.25,        // 重力 (越小越飘)
+        jumpStrength: -10.5,  // 跳跃力度
+        moveSpeed: 4.5,       // 左右移动最大速度 (调慢了)
+        friction: 0.92,       // 摩擦力 (越接近1越滑，调高了以便更容易停下)
+        platformGapMin: 70,
+        platformGapMax: 110
+    };
+
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // 游戏变量
+    let isPlaying = false;
+    let score = 0;
+    let cameraY = 0;
+    let width, height;
+    let frameId;
+    let gameSpeed = 1;
+
+    // 音频上下文
+    let audioCtx;
+    let isMuted = false;
+
+    // 景点数据
+    const locations = [
+        { h: 0, name: "小区门口土坡", color: "#87CEEB" },
+        { h: 300, name: "杭州 · 宝石山", color: "#7EC0EE" },
+        { h: 800, name: "北京 · 香山", color: "#6495ED" },
+        { h: 1500, name: "山东 · 泰山", color: "#4682B4" },
+        { h: 3000, name: "安徽 · 黄山", color: "#4169E1" },
+        { h: 5000, name: "陕西 · 华山", color: "#191970" },
+        { h: 8848, name: "西藏 · 珠穆朗玛", color: "#000033" } // 太空色
+    ];
+
+    const momQuotes = [
+        "穿上秋裤再出门！",
+        "作业写完了吗就玩？",
+        "隔壁阿花都会抓老鼠了！",
+        "几点了还不回家吃饭？",
+        "只要你听话，妈给你买小鱼干！",
+        "爬那么高，摔着屁股咋办！"
+    ];
+
+    // 角色：小猫
+    const player = {
+        x: 0, y: 0, w: 40, h: 40,
+        vx: 0, vy: 0,
+        facingRight: true
+    };
+
+    let platforms = [];
+    let moms = [];
+    let moveLeft = false;
+    let moveRight = false;
+
+    // --------------- 音效系统 (纯代码合成) ---------------- //
+    
+    function initAudio() {
+        if (!audioCtx) {
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            audioCtx = new AudioContext();
+        }
+        if (audioCtx.state === 'suspended') {
+            audioCtx.resume();
+        }
+    }
+
+    function playTone(freq, type, duration, vol=0.1) {
+        if (isMuted || !audioCtx) return;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+        gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + duration);
+    }
+
+    const SFX = {
+        jump: () => {
+            // 快速滑音
+            if (isMuted || !audioCtx) return;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.frequency.setValueAtTime(300, audioCtx.currentTime);
+            osc.frequency.linearRampToValueAtTime(600, audioCtx.currentTime + 0.1);
+            gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+            gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.1);
+            osc.connect(gain); gain.connect(audioCtx.destination);
+            osc.start(); osc.stop(audioCtx.currentTime + 0.1);
+        },
+        die: () => playTone(150, 'sawtooth', 0.5, 0.2),
+        bgmTick: 0,
+        playBGM: () => {
+            // 极其简单的背景节奏
+            if (isMuted || !isPlaying) return;
+            SFX.bgmTick++;
+            if (SFX.bgmTick % 40 === 0) { // 简单的贝斯线
+                playTone(220, 'triangle', 0.1, 0.03);
+            }
+            if (SFX.bgmTick % 80 === 0) {
+                playTone(110, 'sine', 0.2, 0.05);
+            }
+        }
+    };
+
+    function toggleSound() {
+        isMuted = !isMuted;
+        document.getElementById('mute-btn').innerText = isMuted ? '🔇' : '🔊';
+    }
+
+    // --------------- 游戏逻辑 ---------------- //
+
+    function resize() {
+        width = window.innerWidth;
+        height = window.innerHeight;
+        canvas.width = width;
+        canvas.height = height;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // 触摸控制优化
+    function handleTouch(e) {
+        e.preventDefault(); // 防止滚动
+        moveLeft = false; 
+        moveRight = false;
+        
+        // 支持多点触控
+        for(let i=0; i<e.touches.length; i++) {
+            let t = e.touches[i];
+            if(t.clientX < width / 2) moveLeft = true;
+            else moveRight = true;
+        }
+    }
+
+    canvas.addEventListener('touchstart', handleTouch);
+    canvas.addEventListener('touchmove', handleTouch);
+    canvas.addEventListener('touchend', (e) => {
+        e.preventDefault();
+        if (e.touches.length === 0) {
+            moveLeft = false;
+            moveRight = false;
+        } else {
+            handleTouch(e);
+        }
+    });
+
+    // 键盘控制
+    window.addEventListener('keydown', e => {
+        if(e.key === 'ArrowLeft') moveLeft = true;
+        if(e.key === 'ArrowRight') moveRight = true;
+    });
+    window.addEventListener('keyup', e => {
+        if(e.key === 'ArrowLeft') moveLeft = false;
+        if(e.key === 'ArrowRight') moveRight = false;
+    });
+
+    function startGame() {
+        initAudio();
+        document.getElementById('start-screen').style.display = 'none';
+        document.getElementById('game-over-screen').style.display = 'none';
+        document.getElementById('hints').style.display = 'flex';
+        
+        // 重置数据
+        player.x = width / 2 - player.w / 2;
+        player.y = height - 200;
+        player.vx = 0;
+        player.vy = CONFIG.jumpStrength;
+        score = 0;
+        cameraY = 0;
+        platforms = [];
+        moms = [];
+        
+        // 初始生成一堆平台
+        let py = height;
+        while(py > 0) {
+            py -= 70;
+            platforms.push({
+                x: Math.random() * (width - 80),
+                y: py,
+                w: 80, h: 15, type: 0
+            });
+        }
+
+        isPlaying = true;
+        loop();
+    }
+
+    function resetGame() {
+        startGame();
+    }
+
+    function gameOver(reason) {
+        isPlaying = false;
+        SFX.die();
+        document.getElementById('game-over-screen').style.display = 'flex';
+        document.getElementById('hints').style.display = 'none';
+        document.getElementById('final-score').innerText = "最终高度: " + Math.floor(score) + "m";
+        
+        let msg = reason === 'mom' ? "被老妈逮到了！" : "脚滑掉下去了！";
+        document.getElementById('death-msg').innerText = msg;
+        document.getElementById('mom-quote').innerText = `老妈吼道: "${momQuotes[Math.floor(Math.random()*momQuotes.length)]}"`;
+    }
+
+    function update() {
+        SFX.playBGM();
+
+        // 左右移动 (增加惯性)
+        if (moveLeft) {
+            player.vx -= 0.5;
+            player.facingRight = false;
+        }
+        if (moveRight) {
+            player.vx += 0.5;
+            player.facingRight = true;
+        }
+        
+        // 速度限制 & 摩擦力
+        player.vx = Math.max(Math.min(player.vx, CONFIG.moveSpeed), -CONFIG.moveSpeed);
+        if (!moveLeft && !moveRight) {
+            player.vx *= CONFIG.friction;
+        }
+
+        player.x += player.vx;
+        
+        // 穿墙处理
+        if (player.x < -player.w/2) player.x = width - player.w/2;
+        if (player.x > width - player.w/2) player.x = -player.w/2;
+
+        // 重力
+        player.vy += CONFIG.gravity;
+        player.y += player.vy;
+
+        // 镜头跟随
+        if (player.y < height * 0.45) {
+            let diff = (height * 0.45) - player.y;
+            player.y = height * 0.45;
+            cameraY += diff;
+            score += diff / 10;
+            
+            platforms.forEach(p => p.y += diff);
+            moms.forEach(m => m.y += diff);
+            
+            // 动态生成平台
+            generateContent();
+        }
+
+        // 掉落
+        if (player.y > height) gameOver('fall');
+
+        // 平台碰撞 (仅下落时)
+        if (player.vy > 0) {
+            platforms.forEach(p => {
+                // 宽松判定
+                if (player.x + player.w * 0.8 > p.x && 
+                    player.x + player.w * 0.2 < p.x + p.w &&
+                    player.y + player.h > p.y && 
+                    player.y + player.h < p.y + p.h + 20) {
+                    
+                    player.vy = CONFIG.jumpStrength;
+                    SFX.jump();
+                }
+            });
+        }
+
+        // 敌人碰撞 (圆形判定)
+        moms.forEach(m => {
+            let dx = (player.x + player.w/2) - (m.x + m.w/2);
+            let dy = (player.y + player.h/2) - (m.y + m.h/2);
+            let dist = Math.sqrt(dx*dx + dy*dy);
+            if (dist < (player.w/2 + m.w/2 - 5)) {
+                gameOver('mom');
+            }
+            
+            // 敌人移动
+            m.x += m.vx;
+            if (m.x < 0 || m.x > width - m.w) m.vx *= -1;
+        });
+
+        // 清理
+        platforms = platforms.filter(p => p.y < height + 100);
+        moms = moms.filter(m => m.y < height + 100);
+
+        // UI
+        document.getElementById('height-text').innerText = Math.floor(score) + "m";
+        updateLocationUI();
+    }
+
+    function generateContent() {
+        let topY = platforms.length > 0 ? Math.min(...platforms.map(p => p.y)) : height;
+        
+        if (topY > 100) {
+            // 根据分数增加难度
+            let difficulty = Math.min(score / 5000, 1); 
+            let gap = CONFIG.platformGapMin + Math.random() * (CONFIG.platformGapMax - CONFIG.platformGapMin);
+            let newY = topY - gap;
+            
+            let pW = Math.max(50, 80 - difficulty * 30); // 平台变窄
+
+            // 生成老妈 (分数越高概率越大，最高10%)
+            if (score > 200 && Math.random() < (0.02 + difficulty * 0.08)) {
+                moms.push({
+                    x: Math.random() * (width - 40),
+                    y: newY - 40,
+                    w: 45, h: 45,
+                    vx: (Math.random() - 0.5) * (2 + difficulty * 2)
+                });
+            } else {
+                platforms.push({
+                    x: Math.random() * (width - pW),
+                    y: newY,
+                    w: pW, h: 15
+                });
+            }
+        }
+    }
+
+    function updateLocationUI() {
+        let loc = locations[0];
+        for (let l of locations) { if (score >= l.h) loc = l; }
+        document.getElementById('location-badge').innerText = "📍 " + loc.name;
+    }
+
+    // --------------- 绘图 ---------------- //
+
+    function draw() {
+        // 背景颜色渐变
+        let currentLocIdx = 0;
+        for(let i=locations.length-1; i>=0; i--){
+            if(score >= locations[i].h) { currentLocIdx = i; break; }
+        }
+        ctx.fillStyle = locations[currentLocIdx].color;
+        ctx.fillRect(0,0,width,height);
+
+        // 平台
+        ctx.fillStyle = '#5D4037';
+        platforms.forEach(p => {
+            // 圆角矩形平台
+            ctx.beginPath();
+            ctx.roundRect(p.x, p.y, p.w, p.h, 5);
+            ctx.fill();
+            // 顶部的草/雪
+            ctx.fillStyle = (score > 8000) ? '#FFF' : '#8BC34A'; // 高处是雪，低处是草
+            ctx.beginPath();
+            ctx.roundRect(p.x, p.y, p.w, 6, 5);
+            ctx.fill();
+            ctx.fillStyle = '#5D4037';
+        });
+
+        drawCat(player.x, player.y, player.w, player.h, player.facingRight);
+
+        moms.forEach(m => drawMom(m.x, m.y, m.w));
+    }
+
+    function drawCat(x, y, w, h, facingRight) {
+        ctx.save();
+        ctx.translate(x + w/2, y + h/2);
+        if (!facingRight) ctx.scale(-1, 1); // 左右翻转
+
+        // 身体 (椭圆)
+        ctx.fillStyle = '#FFB74D'; // 橘猫
+        ctx.beginPath();
+        ctx.ellipse(0, 5, w/2.2, h/2.8, 0, 0, Math.PI*2);
+        ctx.fill();
+
+        // 肚皮 (白)
+        ctx.fillStyle = '#FFF3E0';
+        ctx.beginPath();
+        ctx.ellipse(0, 5, w/3.5, h/4, 0, 0, Math.PI*2);
+        ctx.fill();
+
+        // 头 (圆)
+        ctx.fillStyle = '#FFB74D';
+        ctx.beginPath();
+        ctx.arc(0, -8, w/2.2, 0, Math.PI*2);
+        ctx.fill();
+
+        // 耳朵 (三角形)
+        ctx.fillStyle = '#EF6C00'; // 深橘色耳尖
+        ctx.beginPath();
+        ctx.moveTo(-10, -15); ctx.lineTo(-15, -25); ctx.lineTo(-5, -18);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(10, -15); ctx.lineTo(15, -25); ctx.lineTo(5, -18);
+        ctx.fill();
+
+        // 眼睛
+        ctx.fillStyle = '#333';
+        ctx.beginPath();
+        ctx.arc(-5, -10, 2, 0, Math.PI*2);
+        ctx.arc(5, -10, 2, 0, Math.PI*2);
+        ctx.fill();
+
+        // 鼻子嘴巴
+        ctx.fillStyle = '#E91E63';
+        ctx.beginPath();
+        ctx.arc(0, -6, 1.5, 0, Math.PI*2);
+        ctx.fill();
+
+        // 尾巴 (根据Y速度摆动)
+        ctx.strokeStyle = '#FFB74D';
+        ctx.lineWidth = 5;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        let tailY = (player.vy < 0) ? -5 : 5; // 跳起时尾巴翘起
+        ctx.moveTo(-10, 10);
+        ctx.quadraticCurveTo(-20, 5, -22, tailY);
+        ctx.stroke();
+
+        ctx.restore();
+    }
+
+    function drawMom(x, y, size) {
+        ctx.save();
+        ctx.translate(x + size/2, y + size/2);
+        
+        // 爆炸头背景
+        ctx.fillStyle = '#3E2723';
+        ctx.beginPath();
+        ctx.arc(0, 0, size/1.8, 0, Math.PI*2);
+        ctx.fill();
+        // 稍微乱一点的头发
+        for(let i=0; i<6; i++) {
+            ctx.beginPath();
+            ctx.arc(Math.cos(i)*size/2, Math.sin(i)*size/2, size/6, 0, Math.PI*2);
+            ctx.fill();
+        }
+
+        // 脸
+        ctx.fillStyle = '#FFCCBC';
+        ctx.beginPath();
+        ctx.arc(0, 2, size/2.5, 0, Math.PI*2);
+        ctx.fill();
+
+        // 愤怒眉毛
+        ctx.strokeStyle = '#333';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(-8, -5); ctx.lineTo(-2, -1);
+        ctx.moveTo(8, -5); ctx.lineTo(2, -1);
+        ctx.stroke();
+
+        // 眼睛
+        ctx.fillStyle = 'white';
+        ctx.beginPath();
+        ctx.arc(-5, 0, 4, 0, Math.PI*2);
+        ctx.arc(5, 0, 4, 0, Math.PI*2);
+        ctx.fill();
+        ctx.fillStyle = 'black'; // 眼珠
+        ctx.beginPath();
+        ctx.arc(-5, 0, 1.5, 0, Math.PI*2);
+        ctx.arc(5, 0, 1.5, 0, Math.PI*2);
+        ctx.fill();
+
+        // 咆哮嘴
+        ctx.fillStyle = '#D50000';
+        ctx.beginPath();
+        ctx.ellipse(0, 8, 4, 6, 0, 0, Math.PI*2);
+        ctx.fill();
+
+        ctx.restore();
+    }
+
+    function loop() {
+        if (!isPlaying) return;
+        update();
+        draw();
+        frameId = requestAnimationFrame(loop);
+    }
+
+</script>
+</body>
+</html>
